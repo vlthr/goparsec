@@ -128,7 +128,9 @@ func (ast *AST) And(name string, callb ASTNodify, parsers ...interface{}) Parser
 				return ast.trydebug(nil, s, "And", name, i+1, false)
 			}
 			ast.trydebug(node, news, "And", name, i+1, true)
-			nt.Children = append(nt.Children, node.(Queryable))
+			if !isDiscarded(node.(Queryable)) {
+				nt.Children = append(nt.Children, node.(Queryable))
+			}
 		}
 		if q := ast.docallback(name, callb, news, nt); q != nil {
 			return ast.trydebug(q, news, "And", name, -1, true)
@@ -185,7 +187,9 @@ func (ast *AST) Kleene(nm string, callb ASTNodify, ps ...interface{}) Parser {
 			} else if node == nil {
 				break
 			}
-			nt.Children = append(nt.Children, node.(Queryable))
+			if !isDiscarded(node.(Queryable)) {
+				nt.Children = append(nt.Children, node.(Queryable))
+			}
 			if sepScan != nil {
 				if node, news, err = ast.doParse(sepScan, news); err != nil {
 					panic(fmt.Errorf("while sepscan-parsing %q: %v", nm, err))
@@ -223,7 +227,9 @@ func (ast *AST) Many(nm string, callb ASTNodify, parsers ...interface{}) Parser 
 			} else if node == nil {
 				break
 			}
-			nt.Children = append(nt.Children, node.(Queryable))
+			if !isDiscarded(node.(Queryable)) {
+				nt.Children = append(nt.Children, node.(Queryable))
+			}
 			if sepScan != nil {
 				if node, news, err = ast.doParse(sepScan, news); err != nil {
 					panic(fmt.Errorf("while sepscan-parsing %q: %v", nm, err))
@@ -271,7 +277,9 @@ func (ast *AST) ManyUntil(nm string, callb ASTNodify, ps ...interface{}) Parser 
 			} else if node == nil {
 				break
 			}
-			nt.Children = append(nt.Children, node.(Queryable))
+			if !isDiscarded(node.(Queryable)) {
+				nt.Children = append(nt.Children, node.(Queryable))
+			}
 			if sepScan != nil {
 				if node, news, err = ast.doParse(sepScan, news); err != nil {
 					panic(fmt.Errorf("while sepscan-parsing %q: %v", nm, err))
@@ -315,6 +323,94 @@ func (ast *AST) End(name string) Parser {
 		}
 		return nil, s
 	}
+}
+
+// Start is a parser function to detect start of scanner output.
+func (ast *AST) Start(name string) Parser {
+	return func(s Scanner) (ParsecNode, Scanner) {
+		if s.GetCursor() == 0 {
+			return NewTerminal(name, "", s.GetCursor()), s
+		}
+		return nil, s
+	}
+}
+
+// Lookahead combinator.
+// tries to match the given parser, but does not advance the cursor even if it succeeds.
+func (ast *AST) Lookahead(name string, callb ASTNodify, parser interface{}) Parser {
+	return func(s Scanner) (ParsecNode, Scanner) {
+		node, news, err := ast.doParse(parser, s.Clone())
+		if err != nil {
+			panic(fmt.Errorf("while parsing %q: %v", name, err))
+		} else if node == nil {
+			return nil, s
+		} else if q := ast.docallback(name, callb, news, node.(Queryable)); q != nil {
+			return q, s
+		}
+		return nil, s
+	}
+}
+
+// Lookbehind matches a token in a window of `size` bytes BEFORE the cursor. Does not consume any input.
+func (ast *AST) Lookbehind(name string, callb ASTNodify, windowSize int, parser interface{}) Parser {
+	return func(s Scanner) (ParsecNode, Scanner) {
+		node, news, err := ast.doParse(parser, s.LookbehindWindow(windowSize))
+
+		if err != nil {
+			panic(fmt.Errorf("while parsing %q: %v", name, err))
+		} else if node == nil {
+			return nil, s
+		} else if q := ast.docallback(name, callb, news, node.(Queryable)); q != nil {
+			return q, s
+		}
+		return nil, s
+	}
+}
+
+// Not combinator. Performs negative lookahead.
+// returns nil if the given parser matches. Otherwise, returns EmptyMatch.
+// Does not advance the cursor.
+func (ast *AST) Not(name string, callb ASTNodify, parser interface{}) Parser {
+	desc := "NOT " + name
+	return func(s Scanner) (ParsecNode, Scanner) {
+		node, news, err := ast.doParse(parser, s.Clone())
+		if err != nil {
+			panic(fmt.Errorf("while parsing %q: %v", name, err))
+		} else if node == nil {
+			q := ast.docallback(name, callb, news, MaybeNone(desc))
+			return q, s
+		} else {
+			return nil, s
+		}
+	}
+}
+
+// Discard combinator. Applies the given parser as expected, but discards the result.
+// Advances the cursor if the parser matches.
+func (ast *AST) Discard(name string, callb ASTNodify, parser interface{}) Parser {
+	return func(s Scanner) (ParsecNode, Scanner) {
+		node, news, err := ast.doParse(parser, s.Clone())
+		if err != nil {
+			panic(fmt.Errorf("while parsing %q: %v", name, err))
+		} else if node == nil {
+			return nil, s
+		} else if q := ast.docallback(name, callb, news, node.(Queryable)); q != nil {
+			q.SetAttribute("discard", "true")
+			return q, news
+		}
+		return nil, s
+	}
+}
+
+func isDiscarded(node Queryable) bool {
+	attrs := node.GetAttribute("discard")
+	for _, attr := range attrs {
+		// we only expect there to be one discard attribute, but check all to be sure
+		if attr == "true" {
+			return true
+		}
+	}
+	return false
 }
 
 // GetValue return the full text, called as value here, that was parsed

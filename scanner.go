@@ -24,6 +24,10 @@ type Scanner interface {
 	// This will be used by combinators to _backtrack_.
 	Clone() Scanner
 
+	// LookbehindWindow returns a clone of the scanner that views a window of
+	// up to `windowSize` bytes backwards from the cursor.
+	LookbehindWindow(int) Scanner
+
 	// GetCursor gets the current cursor position inside input text.
 	GetCursor() int
 
@@ -35,6 +39,10 @@ type Scanner interface {
 	// pattern. It should be more efficient. Return a bool indicating
 	// if the match was succesfull after advancing the scanner's cursor.
 	MatchString(string) (bool, Scanner)
+
+	// MatchBehind tries to match the given parser on a window of up to `size` bytes BACKWARDS in the text.
+	// does not advance the scanner.
+	MatchBehind(int, string) ([]byte, Scanner)
 
 	// SubmatchAll the input stream with a choice of `patterns`
 	// and return matching string and submatches, after advancing the
@@ -109,6 +117,18 @@ func (s *SimpleScanner) Clone() Scanner {
 	}
 }
 
+// LookbehindWindow produces a window of size up to `windowSize` behind the current cursor location.
+func (s *SimpleScanner) LookbehindWindow(windowSize int) Scanner {
+	return &SimpleScanner{
+		buf:          s.buf[:s.cursor],
+		cursor:       max(s.cursor-windowSize, 0),
+		lineno:       s.lineno,
+		patternCache: s.patternCache,
+		wsPattern:    s.wsPattern,
+		tracklineno:  s.tracklineno,
+	}
+}
+
 // GetCursor implement Scanner{} interface.
 func (s *SimpleScanner) GetCursor() int {
 	return s.cursor
@@ -122,6 +142,25 @@ func (s *SimpleScanner) Match(pattern string) ([]byte, Scanner) {
 			s.lineno += len(bytes.Split(token, []byte{'\n'})) - 1
 		}
 		s.cursor += len(token)
+		return token, s
+	}
+	return nil, s
+}
+
+// Max returns the larger of x or y.
+func max(x, y int) int {
+	if x < y {
+		return y
+	}
+	return x
+}
+
+// MatchBehind tries to match the given parser on a window of up to `size` bytes BACKWARDS in the text.
+// does not advance the scanner.
+func (s *SimpleScanner) MatchBehind(size int, pattern string) ([]byte, Scanner) {
+	regc := s.getPattern(pattern)
+	windowStart := max(s.cursor-size, 0)
+	if token := regc.Find(s.buf[windowStart:s.cursor]); token != nil {
 		return token, s
 	}
 	return nil, s
